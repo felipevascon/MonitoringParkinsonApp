@@ -9,7 +9,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.gabriel.wear"
+        applicationId = "com.gabriel.monitorparkinson"
         minSdk = 30
         targetSdk = 35
         versionCode = 1
@@ -39,8 +39,14 @@ android {
 
 dependencies {
     implementation(project(":shared"))
-    implementation(libs.kotlinx.coroutines.play.services)
+    implementation("androidx.core:core-ktx:1.10.1")
+    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    implementation("androidx.wear:wear-ongoing:1.0.0")
+    implementation("com.google.android.gms:play-services-wearable:19.0.0")
     implementation(libs.play.services.wearable)
+
+    implementation(libs.kotlinx.coroutines.play.services)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)

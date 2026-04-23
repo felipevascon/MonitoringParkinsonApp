@@ -1,34 +1,44 @@
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+
 package com.gabriel.mobile.presentation
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.gabriel.mobile.ui.theme.MonitorParkinsonAppTheme
 import com.gabriel.shared.SensorDataPoint
-import kotlinx.coroutines.delay
+import com.patrykandpatrick.vico.compose.axis.horizontal.rememberBottomAxis
+import com.patrykandpatrick.vico.compose.axis.vertical.rememberStartAxis
+import com.patrykandpatrick.vico.compose.chart.Chart
+import com.patrykandpatrick.vico.compose.chart.line.lineChart
+import com.patrykandpatrick.vico.compose.component.shapeComponent
+import com.patrykandpatrick.vico.compose.component.textComponent
+import com.patrykandpatrick.vico.compose.legend.verticalLegend
+import com.patrykandpatrick.vico.core.chart.line.LineChart
+import com.patrykandpatrick.vico.core.component.shape.Shapes
+import com.patrykandpatrick.vico.core.entry.ChartEntryModelProducer
+import com.patrykandpatrick.vico.core.entry.FloatEntry
+import com.patrykandpatrick.vico.core.legend.LegendItem
+
 
 class MainActivity : ComponentActivity() {
 
@@ -38,111 +48,410 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MonitorParkinsonAppTheme {
-                // Coleta os estados do ViewModel para a UI
-                val status by viewModel.status.collectAsState()
-                val dataPoints by viewModel.sensorDataPoints.collectAsState()
-                // MUDANÇA 1: Coleta o novo estado de conexão
-                val isConnected by viewModel.isConnected.collectAsState()
+                val isSessionActive by viewModel.isSessionActive.collectAsState()
 
-                // MUDANÇA 2: Verifica a conexão a cada 5 segundos
-                LaunchedEffect(Unit) {
-                    while (true) {
-                        viewModel.checkConnection()
-                        delay(5000) // 5 segundos
-                    }
+                if (isSessionActive) {
+                    MonitoringScreen(viewModel)
+                } else {
+                    PatientManagementScreen(viewModel)
                 }
-
-                MainScreen(
-                    status = status,
-                    dataPoints = dataPoints,
-                    isConnected = isConnected
-                )
             }
         }
     }
 }
 
 @Composable
-fun MainScreen(status: String, dataPoints: List<SensorDataPoint>, isConnected: Boolean) {
+fun WatchStatusIndicator(
+    isConnected: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val backgroundColor = if (isConnected) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+    val contentColor = if (isConnected) Color(0xFF388E3C) else Color(0xFFD32F2F)
+    val icon = if (isConnected) Icons.Default.CheckCircle else Icons.Default.Warning
+    val text = if (isConnected) "Relógio Conectado" else "Relógio Desconectado"
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = backgroundColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(imageVector = icon, contentDescription = "Status do Relógio", tint = contentColor)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = text, color = contentColor, fontWeight = FontWeight.Bold)
+            }
+            IconButton(onClick = onRefresh) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Verificar Conexão Novamente",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PatientManagementScreen(viewModel: MainViewModel) {
+    val patients by viewModel.patients.collectAsState()
+    val selectedPatient by viewModel.selectedPatient.collectAsState()
+    var showAddPatientDialog by remember { mutableStateOf(false) }
+    val isInSelectionMode by viewModel.isInSelectionMode.collectAsState()
+    val selectedForDeletion by viewModel.selectedForDeletion.collectAsState()
+    val isConnected by viewModel.isConnected.collectAsState()
+
     Scaffold(
         topBar = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
-            ) {
-                Text(
-                    text = "Monitor de Parkinson",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
+            if (isInSelectionMode) {
+                SelectionModeTopAppBar(
+                    selectedCount = selectedForDeletion.size,
+                    onClose = { viewModel.exitSelectionMode() },
+                    onDelete = { viewModel.deleteSelectedPatients() }
                 )
-                // MUDANÇA 3: Novo Text para o status da conexão
+            } else {
+                TopAppBar(title = { Text("Gestão de Pacientes") })
+            }
+        },
+        floatingActionButton = {
+            if (!isInSelectionMode) {
+                FloatingActionButton(onClick = { showAddPatientDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "Adicionar Paciente")
+                }
+            }
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .padding(innerPadding)
+                .padding(16.dp)
+                .fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            WatchStatusIndicator(
+                isConnected = isConnected,
+                onRefresh = { viewModel.checkConnection() },
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            if (patients.isEmpty()) {
                 Text(
-                    text = if (isConnected) "Relógio Conectado" else "Relógio Desconectado",
+                    "Nenhum paciente cadastrado. Adicione um para começar.",
+                    modifier = Modifier.padding(16.dp),
+                    textAlign = TextAlign.Center
+                )
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    items(patients, key = { it.id }) { patient ->
+                        PatientItem(
+                            patient = patient,
+                            isSelectedForConnection = patient.id == selectedPatient?.id,
+                            isInSelectionMode = isInSelectionMode,
+                            isSelectedForDeletion = selectedForDeletion.contains(patient.id),
+                            onToggleSelection = { viewModel.toggleSelection(patient.id) },
+                            onStartSelectionMode = { viewModel.enterSelectionMode(patient.id) },
+                            onSelectForConnection = { viewModel.selectPatient(patient) }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // <<< ALTERAÇÃO PRINCIPAL AQUI >>>
+            if (selectedPatient != null && !isInSelectionMode) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text("Paciente Selecionado:", style = MaterialTheme.typography.titleMedium)
+                        Text(selectedPatient!!.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        // Substituímos o texto antigo pelo botão de Iniciar Sessão
+                        Button(
+                            onClick = { viewModel.requestStartSession() },
+                            enabled = isConnected // O botão só fica ativo se o relógio estiver conectado
+                        ) {
+                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Iniciar Sessão")
+                        }
+                    }
+                }
+            } else if (!isInSelectionMode) {
+                Text("Selecione um paciente da lista para o conectar ao servidor.")
+            }
+        }
+    }
+
+    if (showAddPatientDialog) {
+        AddPatientDialog(
+            onDismiss = { showAddPatientDialog = false },
+            onAddPatient = { name ->
+                viewModel.addPatient(name)
+                showAddPatientDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+fun SelectionModeTopAppBar(selectedCount: Int, onClose: () -> Unit, onDelete: () -> Unit) {
+    TopAppBar(
+        title = { Text("$selectedCount selecionado(s)") },
+        navigationIcon = {
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, contentDescription = "Cancelar Seleção")
+            }
+        },
+        actions = {
+            IconButton(onClick = onDelete, enabled = selectedCount > 0) {
+                Icon(Icons.Default.Delete, contentDescription = "Excluir Selecionados")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun PatientItem(
+    patient: Patient,
+    isSelectedForConnection: Boolean,
+    isInSelectionMode: Boolean,
+    isSelectedForDeletion: Boolean,
+    onToggleSelection: () -> Unit,
+    onStartSelectionMode: () -> Unit,
+    onSelectForConnection: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onLongPress = {
+                        onStartSelectionMode()
+                    },
+                    onTap = {
+                        if (isInSelectionMode) {
+                            onToggleSelection()
+                        } else {
+                            onSelectForConnection()
+                        }
+                    }
+                )
+            },
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelectedForConnection && !isInSelectionMode) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            }
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (isInSelectionMode) {
+                Checkbox(
+                    checked = isSelectedForDeletion,
+                    onCheckedChange = { onToggleSelection() }
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+            }
+            Text(
+                text = patient.name,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+fun AddPatientDialog(onDismiss: () -> Unit, onAddPatient: (String) -> Unit) {
+    var patientName by remember { mutableStateOf("") }
+    Dialog(onDismissRequest = onDismiss) {
+        Card {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Adicionar Novo Paciente", style = MaterialTheme.typography.headlineSmall)
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedTextField(value = patientName, onValueChange = { patientName = it }, label = { Text("Nome do Paciente") })
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Cancelar") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = { onAddPatient(patientName) }, enabled = patientName.isNotBlank()) { Text("Adicionar") }
+                }
+            }
+        }
+    }
+}
+@Composable
+fun MonitoringScreen(viewModel: MainViewModel) {
+    val status by viewModel.status.collectAsState()
+    val dataPoints by viewModel.sensorDataPoints.collectAsState()
+    val isConnected by viewModel.isConnected.collectAsState()
+
+    // <<< NOVO: Coleta os estados necessários que estavam faltando >>>
+    val isSessionActive by viewModel.isSessionActive.collectAsState()
+    val batteryLevel by viewModel.watchBatteryLevel.collectAsState()
+
+    var selectedTabIndex by remember { mutableStateOf(0) }
+    val tabs = listOf("Dados", "Gráfico")
+
+    Scaffold(topBar = {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // <<< ALTERAÇÃO: A chamada para MonitoringTopBar agora inclui todos os parâmetros >>>
+            MonitoringTopBar(
+                status = status,
+                isConnected = isConnected,
+                isSessionActive = isSessionActive,
+                batteryLevel = batteryLevel,
+                onStartSession = { viewModel.requestStartSession() },
+                onStopSession = { viewModel.stopSession() }
+            )
+            TabRow(selectedTabIndex = selectedTabIndex) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTabIndex == index,
+                        onClick = { selectedTabIndex = index },
+                        text = { Text(title) })
+                }
+            }
+        }
+    }) { innerPadding ->
+        Column(modifier = Modifier.padding(innerPadding)) {
+            when (selectedTabIndex) {
+                0 -> DataListScreen(dataPoints = dataPoints)
+                1 -> RealTimeChartScreen(dataPoints = dataPoints)
+            }
+        }
+    }
+}
+
+@Composable
+fun MonitoringTopBar(
+    status: String,
+    isConnected: Boolean,
+    isSessionActive: Boolean,
+    batteryLevel: Int?, // <<< NOVO: Parâmetro para receber o nível da bateria
+    onStartSession: () -> Unit,
+    onStopSession: () -> Unit
+) {
+    Column(modifier = Modifier.padding(16.dp)) {
+        Text(
+            text = if (isSessionActive) "Monitoramento Ativo" else "Pronto para Iniciar",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        // <<< ALTERAÇÃO: Usando uma Row para alinhar o status e a bateria >>>
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = if (isConnected) "Relógio Conectado" else "Relógio Desconectado",
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (isConnected) Color(0xFF4CAF50) else Color.Red
+            )
+            // <<< NOVO: Exibe o nível da bateria se estiver conectado e disponível >>>
+            if (isConnected && batteryLevel != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "🔋 $batteryLevel%",
                     style = MaterialTheme.typography.bodyLarge,
-                    color = if (isConnected) Color.Green else Color.Red
-                )
-                Text(
-                    text = "Status dos Dados: $status",
-                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.secondary
                 )
             }
         }
-    ) { innerPadding ->
-        if (dataPoints.isEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
+        Text(
+            text = "Status: $status",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.secondary
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (isSessionActive) {
+            Button(
+                onClick = onStopSession,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
             ) {
-                Text("Nenhum dado recebido ainda.")
+                Text("Parar Sessão")
             }
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+            Button(
+                onClick = onStartSession,
+                enabled = isConnected
             ) {
-                items(dataPoints.reversed()) { dataPoint ->
-                    DataPointCard(dataPoint = dataPoint)
-                }
+                Text("Iniciar Sessão")
             }
         }
+    }
+}
+@Composable
+fun DataListScreen(dataPoints: List<SensorDataPoint>) {
+    if (dataPoints.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Nenhum dado recebido ainda.") }
+    } else {
+        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), reverseLayout = true) {
+            items(dataPoints) { dataPoint -> DataPointCard(dataPoint = dataPoint) }
+        }
+    }
+}
+
+@Composable
+fun RealTimeChartScreen(dataPoints: List<SensorDataPoint>) {
+    val modelProducer = remember { ChartEntryModelProducer() }
+    LaunchedEffect(dataPoints) {
+        if (dataPoints.isNotEmpty()) {
+            val windowedData = dataPoints.takeLast(100)
+            val xData = windowedData.mapIndexed { index, _ -> index.toFloat() }
+            val yDataX = windowedData.map { it.values[0] }
+            val yDataY = windowedData.map { it.values[1] }
+            val yDataZ = windowedData.map { it.values[2] }
+            modelProducer.setEntries(xData.zip(yDataX, ::FloatEntry), xData.zip(yDataY, ::FloatEntry), xData.zip(yDataZ, ::FloatEntry))
+        } else {
+            modelProducer.setEntries(emptyList<FloatEntry>()) // Limpa o gráfico se não houver dados
+        }
+    }
+    if (dataPoints.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Aguardando dados para exibir o gráfico.") }
+    } else {
+        val colorX = Color.Red; val colorY = Color.Green; val colorZ = Color.Blue
+        Chart(
+            modifier = Modifier.fillMaxSize().padding(8.dp),
+            chart = lineChart(lines = listOf(LineChart.LineSpec(lineColor = colorX.toArgb()), LineChart.LineSpec(lineColor = colorY.toArgb()), LineChart.LineSpec(lineColor = colorZ.toArgb()))),
+            chartModelProducer = modelProducer,
+            startAxis = rememberStartAxis(),
+            bottomAxis = rememberBottomAxis(),
+            legend = verticalLegend(
+                items = listOf(
+                    LegendItem(icon = shapeComponent(Shapes.pillShape, colorX), label = textComponent(color = MaterialTheme.colorScheme.onSurface), labelText = "Eixo X"),
+                    LegendItem(icon = shapeComponent(Shapes.pillShape, colorY), label = textComponent(color = MaterialTheme.colorScheme.onSurface), labelText = "Eixo Y"),
+                    LegendItem(icon = shapeComponent(Shapes.pillShape, colorZ), label = textComponent(color = MaterialTheme.colorScheme.onSurface), labelText = "Eixo Z")
+                ),
+                iconSize = 8.dp, iconPadding = 8.dp, spacing = 4.dp
+            )
+        )
     }
 }
 
 @Composable
 fun DataPointCard(dataPoint: SensorDataPoint) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
             val (x, y, z) = dataPoint.values
-            Text(
-                text = "Eixo X: ${"%.3f".format(x)}",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Text(
-                text = "Eixo Y: ${"%.3f".format(y)}",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Text(
-                text = "Eixo Z: ${"%.3f".format(z)}",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Text(
-                text = "Timestamp: ${dataPoint.timestamp}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+            Text(text = "Eixo X: ${"%.3f".format(x)}")
+            Text(text = "Eixo Y: ${"%.3f".format(y)}")
+            Text(text = "Eixo Z: ${"%.3f".format(z)}")
+            Text(text = "Timestamp: ${dataPoint.timestamp}", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
         }
     }
 }

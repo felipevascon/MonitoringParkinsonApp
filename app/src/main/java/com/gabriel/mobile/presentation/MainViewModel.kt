@@ -1,62 +1,205 @@
 package com.gabriel.mobile.presentation
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.gabriel.mobile.data.SensorDataRepository
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.gabriel.mobile.service.MonitoringService
 import com.gabriel.shared.SensorDataPoint
 import com.google.android.gms.wearable.Wearable
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.flow.update
+import java.util.UUID
 
-// MUDANÇA: Usamos AndroidViewModel para ter acesso ao contexto do aplicativo.
+data class Patient(val id: String = UUID.randomUUID().toString(), val name: String)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val nodeClient by lazy { Wearable.getNodeClient(getApplication()) }
+    private val gson = Gson()
+    private val sharedPreferences = application.getSharedPreferences("patient_prefs", Context.MODE_PRIVATE)
+    private val nodeClient by lazy { Wearable.getNodeClient(application) }
 
-    // StateFlow para os dados do sensor
-    private val _sensorDataPoints = MutableStateFlow<List<SensorDataPoint>>(emptyList())
-    val sensorDataPoints = _sensorDataPoints.asStateFlow()
+    private val _patients = MutableStateFlow<List<Patient>>(emptyList())
+    val patients = _patients.asStateFlow()
 
-    // StateFlow para o status de recebimento de dados
-    private val _status = MutableStateFlow("Aguardando dados...")
+    private val _selectedPatient = MutableStateFlow<Patient?>(null)
+    val selectedPatient = _selectedPatient.asStateFlow()
+
+    private val _isSessionActive = MutableStateFlow(false)
+    val isSessionActive = _isSessionActive.asStateFlow()
+
+    private val _isInSelectionMode = MutableStateFlow(false)
+    val isInSelectionMode = _isInSelectionMode.asStateFlow()
+
+    private val _selectedForDeletion = MutableStateFlow<Set<String>>(emptySet())
+    val selectedForDeletion = _selectedForDeletion.asStateFlow()
+
+    private val _status = MutableStateFlow("Aguardando Início")
     val status = _status.asStateFlow()
 
-    // MUDANÇA: Novo StateFlow para o status da conexão
     private val _isConnected = MutableStateFlow(false)
     val isConnected = _isConnected.asStateFlow()
 
-    init {
-        // Verifica a conexão assim que o ViewModel é criado
-        checkConnection()
+    private val _sensorDataPoints = MutableStateFlow<List<SensorDataPoint>>(emptyList())
+    val sensorDataPoints = _sensorDataPoints.asStateFlow()
 
-        // Coleta os dados do sensor vindos do repositório
-        viewModelScope.launch {
-            SensorDataRepository.sensorDataFlow.collect { dataPoint ->
-                _sensorDataPoints.value += dataPoint
-                _status.value = "Recebendo dados..."
+    // <<< NOVO: StateFlow para o nível da bateria do relógio >>>
+    private val _watchBatteryLevel = MutableStateFlow<Int?>(null)
+    val watchBatteryLevel = _watchBatteryLevel.asStateFlow()
+
+
+    private val serviceUpdateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                MonitoringService.ACTION_STATUS_UPDATE -> {
+                    _status.value = intent.getStringExtra(MonitoringService.EXTRA_STATUS_MESSAGE) ?: "Status desconhecido"
+                }
+                MonitoringService.ACTION_SESSION_STATE_UPDATE -> {
+                    _isSessionActive.value = intent.getBooleanExtra(MonitoringService.EXTRA_IS_SESSION_ACTIVE, false)
+                }
+                MonitoringService.ACTION_NEW_DATA_UPDATE -> {
+                    val dataPointsJson = intent.getStringExtra(MonitoringService.EXTRA_DATA_POINTS)
+                    if (dataPointsJson != null) {
+                        val type = object : TypeToken<List<SensorDataPoint>>() {}.type
+                        _sensorDataPoints.value = gson.fromJson(dataPointsJson, type)
+                    }
+                }
+                // <<< NOVO: Case para receber a atualização de bateria do serviço >>>
+                MonitoringService.ACTION_WATCH_STATUS_UPDATE -> {
+                    val batteryLevel = intent.getIntExtra(MonitoringService.EXTRA_BATTERY_LEVEL, -1)
+                    if (batteryLevel != -1) {
+                        _watchBatteryLevel.value = batteryLevel
+                    }
+                }
             }
         }
     }
 
-    // MUDANÇA: Nova função para verificar os nós conectados
-    fun checkConnection() {
-        viewModelScope.launch {
-            try {
-                val nodes = nodeClient.connectedNodes.await()
-                _isConnected.value = nodes.isNotEmpty()
-                if (nodes.isNotEmpty()) {
-                    Log.d("MainViewModel", "Nós conectados encontrados: ${nodes.size}")
-                } else {
-                    Log.d("MainViewModel", "Nenhum nó conectado encontrado.")
-                }
-            } catch (e: Exception) {
-                Log.e("MainViewModel", "Falha ao verificar conexão", e)
-                _isConnected.value = false
+    init {
+        val intentFilter = IntentFilter().apply {
+            addAction(MonitoringService.ACTION_STATUS_UPDATE)
+            addAction(MonitoringService.ACTION_SESSION_STATE_UPDATE)
+            addAction(MonitoringService.ACTION_NEW_DATA_UPDATE)
+            // <<< NOVO: Registra interesse na ação de atualização de bateria >>>
+            addAction(MonitoringService.ACTION_WATCH_STATUS_UPDATE)
+        }
+        LocalBroadcastManager.getInstance(application).registerReceiver(serviceUpdateReceiver, intentFilter)
+
+        checkConnection()
+        loadPatients()
+    }
+
+    fun addPatient(name: String) {
+        val newPatient = Patient(name = name)
+        val updatedList = _patients.value + newPatient
+        _patients.value = updatedList
+        savePatients(updatedList)
+    }
+
+    fun selectPatient(patient: Patient) {
+        _selectedPatient.value = patient
+        val serviceIntent = Intent(getApplication(), MonitoringService::class.java).apply {
+            action = MonitoringService.ACTION_CONNECT
+            putExtra(MonitoringService.EXTRA_PATIENT_NAME, patient.name)
+        }
+        getApplication<Application>().startService(serviceIntent)
+        Log.d("ViewModel_DEBUG", "Comando ACTION_SET_PATIENT enviado para o serviço para o paciente ${patient.name}")
+    }
+
+    fun deleteSelectedPatients() {
+        val selection = _selectedForDeletion.value
+        if (selection.isEmpty()) {
+            exitSelectionMode()
+            return
+        }
+        if (_selectedPatient.value != null && selection.contains(_selectedPatient.value!!.id)) {
+            if (_isSessionActive.value) {
+                stopSession()
+            }
+            _selectedPatient.value = null
+        }
+        val updatedList = _patients.value.filter { !selection.contains(it.id) }
+        _patients.value = updatedList
+        savePatients(updatedList)
+        exitSelectionMode()
+    }
+
+    fun enterSelectionMode(initialPatientId: String) {
+        _isInSelectionMode.value = true
+        _selectedForDeletion.value = setOf(initialPatientId)
+    }
+
+    fun toggleSelection(patientId: String) {
+        _selectedForDeletion.update { currentSelection ->
+            if (currentSelection.contains(patientId)) {
+                currentSelection - patientId
+            } else {
+                currentSelection + patientId
             }
         }
+    }
+
+    fun exitSelectionMode() {
+        _isInSelectionMode.value = false
+        _selectedForDeletion.value = emptySet()
+    }
+
+    fun requestStartSession() {
+        val patient = _selectedPatient.value
+        if (patient == null) {
+            Log.w("MainViewModel", "Tentativa de iniciar sessão sem paciente selecionado.")
+            return
+        }
+        Log.d("MainViewModel", "Requisitando início de sessão para ${patient.name}")
+
+        val serviceIntent = Intent(getApplication(), MonitoringService::class.java).apply {
+            action = MonitoringService.ACTION_REQUEST_START_SESSION
+            putExtra(MonitoringService.EXTRA_PATIENT_NAME, patient.name)
+        }
+        getApplication<Application>().startService(serviceIntent)
+    }
+
+    fun stopSession() {
+        if (!_isSessionActive.value) {
+            Log.w("MainViewModel", "Comando stopSession ignorado, pois a sessão não está ativa.")
+            return
+        }
+
+        Log.d("MainViewModel", "Enviando comando para parar o MonitoringService")
+        val serviceIntent = Intent(getApplication(), MonitoringService::class.java).apply {
+            action = MonitoringService.ACTION_STOP
+        }
+        getApplication<Application>().startService(serviceIntent)
+    }
+
+    private fun savePatients(patients: List<Patient>) {
+        val json = gson.toJson(patients)
+        sharedPreferences.edit().putString("patient_list", json).apply()
+    }
+
+    private fun loadPatients() {
+        val json = sharedPreferences.getString("patient_list", null)
+        if (json != null) {
+            val type = object : TypeToken<List<Patient>>() {}.type
+            _patients.value = gson.fromJson(json, type)
+        }
+    }
+
+    fun checkConnection() {
+        nodeClient.connectedNodes.addOnSuccessListener { nodes ->
+            _isConnected.value = nodes.any { it.isNearby }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        LocalBroadcastManager.getInstance(getApplication()).unregisterReceiver(serviceUpdateReceiver)
     }
 }

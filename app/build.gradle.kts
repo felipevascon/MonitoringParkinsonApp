@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("kotlin-kapt")
 }
 
 android {
@@ -9,7 +10,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.gabriel.mobile"
+        applicationId = "com.gabriel.monitorparkinson"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -18,15 +19,25 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // --- MUDANÇA INSERIDA AQUI ---
     buildTypes {
+        debug {
+            // Esta linha cria uma variável BuildConfig.SERVER_URL para a versão de debug
+            //buildConfigField("String", "SERVER_URL", "\"http://192.168.0.12:5000\"")
+            buildConfigField("String", "SERVER_URL", "\"http://webapp-tremor-app.azurewebsites.net\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Para o futuro, definir a URL do servidor de produção aqui
+            buildConfigField("String", "SERVER_URL", "\"https://seu-servidor-na-nuvem.com\"")
         }
     }
+    // --- FIM DA MUDANÇA ---
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -36,12 +47,25 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
 dependencies {
 
     implementation(project(":shared"))
+    implementation (libs.androidx.localbroadcastmanager)
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    // Vico Chart Library
+    implementation("com.patrykandpatrick.vico:compose-m3:1.14.0")
+    implementation("com.patrykandpatrick.vico:core:1.14.0")
+    implementation("com.patrykandpatrick.vico:compose:1.14.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("io.socket:socket.io-client:2.1.0")
 
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.play.services.wearable)
